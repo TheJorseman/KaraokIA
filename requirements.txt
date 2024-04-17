@@ -1,0 +1,5 @@
+git+https://github.com/m-bain/whisperx.git
+yt-dlp==2024.4.9
+librosa==0.10.1
+soundfile==0.12.1
+demucs
