@@ -4,12 +4,15 @@ from typing import Union
 import whisperx
 from torchaudio.transforms import Resample
 from Karaokia.download.youtube_download import download_youtube, extract_audio_from_video
+from Karaokia.video.editor import Editor
 from .transforms import Mono, Compose
 from Karaokia.audio_separation.audio_separation import AudioSeparation
 from Karaokia.database.database_karaokia import DBManager
 from urllib.parse import urlparse, parse_qs
 import numpy as np
 import json
+import gc
+from timeit import default_timer
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -23,6 +26,7 @@ class KaraokIA:
             db_name: str = "karaokia.db",
             torch_hub_dir: str = "./weights",
             HF_TOKEN:str = "",
+            generated_folder:str = "./generated",
         ) -> None:
         torch.hub.set_dir(torch_hub_dir)
         self.HF_TOKEN = HF_TOKEN
@@ -39,6 +43,9 @@ class KaraokIA:
             self.resample,
             self.to_mono 
         ])
+        self.generated_folder = generated_folder
+        self.editor = Editor()
+
 
     def video_id(self, value: str):
         """
@@ -82,10 +89,10 @@ class KaraokIA:
     
     def audio_separation_process(self, metadata: dict) -> dict[str: any]:
         separated = self.audio_separation.from_file(metadata['audio_output'])
-        
         base_files = self.audio_separation.save_audio({'base': separated['base']}, self.download_folder, _id=metadata['id'])
         vocals = self.demucs_to_whisper(separated['vocals'])
-
+        self.audio_separation.deallocate()
+        self.free()
         return {
             'base': base_files['base'],
             'vocals': vocals.numpy(),
@@ -96,20 +103,22 @@ class KaraokIA:
         if isinstance(source, str):
             audio = whisperx.load_audio(source)
         result = self.model.transcribe(audio, batch_size=batch_size, language=language, print_progress=True)
+        self.free()
         return audio, result 
 
     def alignt_output(self, audio: np.ndarray, result: dict, return_char_alignments: bool = False):
         model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
         result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=return_char_alignments)
+        self.free()
         return result
 
     def diarization(self, audio: np.ndarray, result: dict):
         diarize_segments = self.diarize_model(audio)
         result = whisperx.assign_word_speakers(diarize_segments, result)
+        self.free()
         return result
 
-    def save_metadata(self, metadata: dict) -> None:
-        _id = metadata['id']
+    def save_metadata(self, metadata: dict, _id: int) -> None:
         with open(os.path.join(self.download_folder, f"{_id}.json"), "w") as outfile: 
             json.dump(metadata, outfile)
 
@@ -119,16 +128,15 @@ class KaraokIA:
             metadata = json.load(file)
         return metadata
 
-    def run(self, url: str, batch_size:int = 16, language: Union[str, None] = 'es') -> dict:
+    def free(self) -> None:
+        gc.collect(); torch.cuda.empty_cache();
+
+    def run(self, url: str, batch_size:int = 16, language: Union[str, None] = 'es', diarization: bool = False) -> dict:
         _id = self.video_id(url)
         if _id is None:
             raise ValueError("The URL is not a youtube valid link")
-        if not self.db_manager.yt_id_exist(_id):
-            metadata = self.download_process(url)
-            self.save_metadata(metadata)
-            self.db_manager.insert(_id)
-        else:
-            metadata = self.load_metadata(_id)
+        metadata = self.download_process(url)
+        #
         files = {
             'vocals': os.path.join(self.download_folder, f"{_id}_vocals.wav"), 
             'base': os.path.join(self.download_folder, f"{_id}_base.wav")
@@ -137,5 +145,13 @@ class KaraokIA:
             files = self.audio_separation_process(metadata)
         audio, result = self.speech_recognition(files['vocals'], batch_size=batch_size, language=language)
         result_aligned = self.alignt_output(audio, result)
-        result_diarizated = self.diarization(audio, result_aligned)
-        return result_diarizated
+        if diarization:
+            init = default_timer()
+            result_aligned = self.diarization(audio, result_aligned)
+            print("Diarization time ", default_timer()-init)
+        self.save_metadata(result_aligned, _id)
+        os.makedirs(self.generated_folder, exist_ok=True)
+        output_file = f"{_id}.mp4"
+        output_file = os.path.join(self.generated_folder, output_file)
+        output_mix = self.editor.generate(metadata['video_output'], files['base'], result_aligned, metadata['title'], output_file)
+        return output_mix

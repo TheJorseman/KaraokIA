@@ -61,6 +61,10 @@ class AudioSeparation(AudioModelBase):
         self.model.cpu()
         self.model.eval()
 
+    def deallocate(self) -> None:
+        self.model.cpu()
+        self.model.eval()
+
     def validate_segment(self, segment):
         if segment is not None and segment < 8:
             raise Exception("Segment must greater than 8. ")

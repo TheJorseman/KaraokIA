@@ -43,5 +43,6 @@ def extract_audio_from_video(video_path: str, audio_path: str):
         video_path (str): Video path
         audio_path (str): Path to save the extracted audio
     """
-    audio , sr = librosa.load(video_path)
-    sf.write(audio_path, audio, sr)
+    os.system(f"ffmpeg -y -i {video_path} -q:a 0 -map a {audio_path}")
+    #audio , sr = librosa.load(video_path)
+    #sf.write(audio_path, audio, sr)
