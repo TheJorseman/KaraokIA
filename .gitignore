@@ -2,10 +2,16 @@
 __pycache__/
 *.py[cod]
 *$py.class
-./downloads
+#Test Folders
+downloads/
+test/
+generated/
+flagged/
 # C extensions
 *.so
-
+# Weights Folder
+weights/
+*.db
 # Distribution / packaging
 .Python
 build/
